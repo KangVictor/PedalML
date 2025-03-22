@@ -1,2 +1,4 @@
 .ghvenv
+.venv
+.DS_Store
 data/generated
