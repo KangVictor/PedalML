@@ -2,3 +2,5 @@
 .venv
 .DS_Store
 data/generated
+IDMT-SMT/data/idmt-smt-audio
+IDMT-SMT-AUDIO-EFFECTS/
