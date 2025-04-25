@@ -3,7 +3,7 @@ import torch.nn.functional as F
 import matplotlib.pyplot as plt
 import torchaudio
 from models.FxNet import FxNet
-from models.WaveNet import WaveNetModel
+from models.LSTM import LSTMModel
 from utils.data_pre import match_list_lengths, get_wav_file_list
 from utils.audio_pre import pre_emphasis
 from torch.utils.data import Dataset, DataLoader
@@ -22,11 +22,10 @@ fxnet_model.load_state_dict(torch.load(model_path, map_location=device))
 fxnet_model.to(device)
 # print(fxnet_model.eval())
 
-# 2. WaveNet Model to Train
-model = WaveNetModel(residual_channels=32, skip_channels=32, dilation_layers=10)
+# 2. LSTM model to Train
+model = LSTMModel(input_size=1, hidden_size=128, num_layers = 2)
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 model.to(device)
-fxnet_model.to(device)
 
 # 3. mel_spectrogram to apply FXNet model
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -34,7 +33,7 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 # Define a Mel-spectrogram transform (differentiable)
 mel_transform = torchaudio.transforms.MelSpectrogram(
     sample_rate=44100,       # sample rate of audio
-    n_fft=1024,             # FFT size
+    n_fft=2048,             # FFT size
     hop_length=256,         # hop size for STFT
     n_mels=128              # number of Mel frequency bands
 ).to(device)
@@ -57,6 +56,9 @@ loader = DataLoader(dataset, batch_size=8, shuffle=True)
 
 
 # 3. Start training
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+model.to(device)
+
 optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
 model.train()
 num_epochs = 30
@@ -74,11 +76,14 @@ for epoch in range(num_epochs):
         target_wave = target_wave.to(device)
 
         # Forward pass
-        output_wave = model(clean_wave)
+        # clean_wave = clean_wave.transpose(1, 2) # Due to LSTM should look like (B, T, 1)
+        output_wave, _ = model(clean_wave.transpose(1, 2))
+        output_wave = output_wave.transpose(1, 2)  # LSTM output shape: (B, T, 1) → (B, 1, T)
 
         # Spectral loss (pre-emphasized MSE)
         clean_pre = pre_emphasis(clean_wave)
         output_pre = pre_emphasis(output_wave)
+        
         spectral_loss = F.mse_loss(output_pre, clean_pre)
 
         # Embedding loss (MAE in fxnet_model feature space)
@@ -89,6 +94,15 @@ for epoch in range(num_epochs):
             mel_target = mel_target.unsqueeze(1)
             mel_output = mel_output.unsqueeze(1)
 
+
+
+        # # Interpolate for 3 times
+        # mel_target = mel_target.repeat(1, 1, 1, 3)
+        # mel_output = mel_output.repeat(1, 1, 1, 3)
+
+
+
+
         with torch.no_grad():  # fxnet_model is frozen, no gradients needed
             emb_target = fxnet_model(mel_target)
 
@@ -96,9 +110,7 @@ for epoch in range(num_epochs):
         embedding_loss = F.l1_loss(emb_output, emb_target)
 
         # Total loss
-        ws = 10
-        we = 1000
-        loss = spectral_loss * ws + embedding_loss * we
+        loss = spectral_loss + embedding_loss
 
         optimizer.zero_grad()
         loss.backward()
@@ -117,12 +129,24 @@ for epoch in range(num_epochs):
     spectral_losses.append(avg_spectral)
     embedding_losses.append(avg_embedding)
 
+    clear_output(wait=True)
     print(f"Epoch {epoch+1}/{num_epochs} - Total Loss: {avg_loss:.4f}, "
           f"Spectral: {avg_spectral:.4f}, Embedding: {avg_embedding:.4f}")
 
-torch.save(model.state_dict(), "models/wavenet_models/wavenet_weights.pth")
+    # Intermediate visualization every 5 epochs
+    if (epoch + 1) % 5 == 0 or epoch == num_epochs - 1:
+        plt.figure(figsize=(10, 5))
+        plt.plot(epoch_losses, label='Total Loss')
+        plt.plot(spectral_losses, label='Spectral Loss', linestyle='--')
+        plt.plot(embedding_losses, label='Embedding Loss', linestyle='--')
+        plt.xlabel('Epoch')
+        plt.ylabel('Loss')
+        plt.title('Training Progress')
+        plt.legend()
+        plt.grid()
+        plt.show()
 
-# Final results plot
+# Final results
 plt.figure(figsize=(10, 5))
 plt.plot(epoch_losses, label='Total Loss')
 plt.plot(spectral_losses, label='Spectral Loss', linestyle='--')
